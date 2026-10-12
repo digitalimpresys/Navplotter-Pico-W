@@ -1,4 +1,4 @@
-// NavPlotter node - Raspberry Pi Pico 2 W (or an original Pico W) with the Waveshare Pico-LoRa-SX1262 module and an external GPS module
+// NavPlotter node - Raspberry Pi Pico W (or Pico 2 W) with the Waveshare Pico-LoRa-SX1262 module and an external GPS module
 //
 // A plotter without a screen: the board does the work and a phone (or a NavPlotter display) shows it:
 //  - reads the GPS, exchanges positions with the other nodes over LoRa (same packet as the other NavPlotters),
@@ -785,7 +785,7 @@ void setup() {
   fsOk = LittleFS.begin();
   if(!fsOk) Serial.println("Internal storage not available");
   loadConfig();
-  Serial.printf("NavPlotter %s (Pico 2 W), node %s, id %08lX\n", FIRMWARE_VERSION, config.name, (unsigned long)myId);
+  Serial.printf("NavPlotter %s (Pico W), node %s, id %08lX\n", FIRMWARE_VERSION, config.name, (unsigned long)myId);
 
   // Optional SD card with chart tiles
   SPI.setRX(PIN_SD_MISO);
