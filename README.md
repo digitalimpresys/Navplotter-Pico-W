@@ -12,6 +12,19 @@ A NavPlotter without a screen: a Raspberry Pi Pico W (or Pico 2 W) with the Wave
 - creates the WiFi network `NavPlotter-<name>` (password `navplotter`) and serves the web app at `http://192.168.4.1`: map, traffic, waypoints, routes, compass, setup;
 - a NavPlotter display (for example the Waveshare ESP32-S3-Touch-LCD-4 one) can use it as its node.
 
+## Messages
+
+Short texts (63 characters at most) between NavPlotters, over LoRa and through the mesh, next to the positions:
+
+- to **one node**: the message is repeated until that node confirms it has arrived ("received"), and the sender is told again when somebody there has read it ("read"). After four tries without a confirmation it shows "NO ANSWER";
+- to **everybody** in range: sent twice, no confirmation asked.
+
+The node has no screen: messages are written and read from the **Chat** page of the web app, also reached from a node's pop-up on the map and from the Nearby page.
+
+An incoming message comes up over whatever page is open, with a sound repeated until it is closed. Only nodes with this firmware, switched on and in range, receive anything, and a packet can be lost: this is a convenience, not a safety system. Messages are kept in memory (the last 12) and are lost at power-off. A beacon asleep (Segnalatore) receives nothing.
+
+The protocol is in `include/nav_messages.h`, which must be the same file in every NavPlotter that has messages. The web app reads and writes them through `/api/messages`.
+
 ## Hardware
 
 | Part | Connection |
