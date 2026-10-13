@@ -20,7 +20,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.3.0"
+#define FIRMWARE_VERSION "0.3.1"
 
 // ---- Pins ----
 // Waveshare Pico-LoRa-SX1262 (fixed by the module, on SPI1)
@@ -45,8 +45,6 @@
 #define LORA_TX_MOVING_MS 10000UL
 #define LORA_TX_STOPPED_MS 30000UL
 #define MOVING_MIN_KNOTS 0.5
-#define TARGET_STALE_MS 60000UL
-#define TARGET_EXPIRE_MS 180000UL
 #define MAX_TARGETS 30
 // Collision alarm: closest point of approach below a passing distance within a warning time, for targets
 // inside the alarm range. Distance and time come from a profile chosen in the setup page, or are typed in.
@@ -96,6 +94,7 @@ struct Target {
   double lat = 0, lon = 0;
   float cog = 0, sog = 0;   // degrees, knots
   unsigned long lastSeen = 0;
+  unsigned long staleMs = TARGET_STALE_MS, expireMs = TARGET_EXPIRE_MS; // longer for a node that sleeps between packets
   float rssi = 0;
   bool relayed = false;
   bool cpaValid = false;
@@ -371,6 +370,8 @@ void processPacket(const TrafficPacket& pkt, float rssi) {
   t->cog = pkt.cog / 10.0;
   t->sog = pkt.sog / 100.0;
   t->lastSeen = millis();
+  t->staleMs = trafficStaleMs(pkt.flags);
+  t->expireMs = trafficExpireMs(pkt.flags);
   t->rssi = rssi;
   t->relayed = pkt.ttl < MESH_TTL;
   Serial.printf("RX %s%s %.5f %.5f %.1f kn %.0f deg, RSSI %.0f\n", t->name, t->relayed ? " (relayed)" : "",
@@ -430,7 +431,7 @@ void updateTarget(Target& t) {
   if(!gpsFix()) return;
 
   const double KN = 0.514444; // knots -> m/s
-  bool stale = millis() - t.lastSeen > TARGET_STALE_MS;
+  bool stale = millis() - t.lastSeen > t.staleMs;
   double age = (millis() - t.lastSeen) / 1000.0;
   double lat0 = gps.location.lat() * DEG_TO_RAD;
 
@@ -465,7 +466,7 @@ void updateTraffic() {
   last = millis();
 
   for(auto it = targets.begin(); it != targets.end(); ) {
-    if(millis() - it->lastSeen > TARGET_EXPIRE_MS) it = targets.erase(it);
+    if(millis() - it->lastSeen > it->expireMs) it = targets.erase(it);
     else ++it;
   }
   const Target* worst = nullptr;
@@ -620,7 +621,7 @@ void handleState() {
       "\"rssi\":%.0f,\"relayed\":%s,\"stale\":%s,\"dist\":%.3f,\"brg\":%.0f,\"cpaValid\":%s,\"cpa\":%.3f,\"tcpa\":%.0f,\"alarm\":%s}",
       first ? "" : ",", (unsigned long)t.id, t.name, t.type, t.simulated ? "true" : "false", t.lat, t.lon, t.sog, t.cog,
       (millis() - t.lastSeen) / 1000, t.rssi, t.relayed ? "true" : "false",
-      millis() - t.lastSeen > TARGET_STALE_MS ? "true" : "false", t.distNm, t.brg,
+      millis() - t.lastSeen > t.staleMs ? "true" : "false", t.distNm, t.brg,
       t.cpaValid ? "true" : "false", t.cpaNm, t.tcpaS, t.alarm ? "true" : "false");
     json += buf;
     first = false;
