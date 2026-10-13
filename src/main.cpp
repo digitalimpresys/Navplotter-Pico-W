@@ -204,7 +204,6 @@ void loadConfig() {
     else if(k == "cpa") config.alarmCpaNm = v.toFloat();
     else if(k == "tcpa") config.alarmTcpaMin = v.toInt();
     else if(k == "wifioff") config.wifiOffMin = v.toInt();
-    else if(k == "quiet") quietFromText(v);
     else if(k == "lang") strlcpy(config.lang, v.c_str(), sizeof(config.lang));
     else if(k == "tiles") config.tiles = v.toInt();
     else if(k == "sound") config.sound = v == "1";
@@ -233,7 +232,7 @@ void saveConfig() {
   if(!fsOk) return;
   File f = LittleFS.open(CONFIG_FILE, "w");
   if(!f) return;
-  f.printf("profile=%u\ncpa=%.2f\ntcpa=%u\nwifioff=%u\nquiet=%s\n", config.alarmProfile, config.alarmCpaNm, config.alarmTcpaMin, config.wifiOffMin, quietToText().c_str());
+  f.printf("profile=%u\ncpa=%.2f\ntcpa=%u\nwifioff=%u\n", config.alarmProfile, config.alarmCpaNm, config.alarmTcpaMin, config.wifiOffMin);
   f.printf("name=%s\ntype=%u\nshare=%d\nrange=%u\nlang=%s\ntiles=%u\nsound=%d\npass=%s\nnet=%u\nstassid=%s\nstapass=%s\n",
     config.name, config.type, config.share ? 1 : 0, config.alarmRangeNm, config.lang, config.tiles, config.sound ? 1 : 0,
     config.wifiPass, config.net, config.staSsid, config.staPass);
@@ -698,7 +697,7 @@ void webPostMessagesRead() {
 
 void webPostQuiet() {
   uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 16);
-  if(setQuiet(id, server.arg("on") == "1")) saveConfig();
+  setQuiet(id, server.arg("on") == "1"); // lasts until power-off: not saved
   sendJson("{\"ok\":true}");
 }
 
