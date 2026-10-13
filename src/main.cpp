@@ -20,7 +20,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.2.0"
+#define FIRMWARE_VERSION "0.3.0"
 
 // ---- Pins ----
 // Waveshare Pico-LoRa-SX1262 (fixed by the module, on SPI1)
@@ -78,6 +78,7 @@ struct Config {
   uint8_t alarmProfile = 1;     // index in ALARM_PROFILES, or ALARM_PROFILE_CUSTOM
   float alarmCpaNm = 0.1;       // the custom profile's passing distance and warning time
   uint16_t alarmTcpaMin = 5;
+  uint8_t wifiOffMin = 0;       // objects only: minutes after power-up before the WiFi goes off (0 = never)
   char lang[3] = "en";          // "en" or "it"
   uint8_t tiles = 0;            // 0 = online, 1 = SD card, 2 = none
   bool sound = true;            // alarm sound on the phone
@@ -121,7 +122,7 @@ bool courseKnown = false;
 bool alarmActive = false;
 char alarmName[BOAT_NAME_LEN] = "";
 String apSsid, hostName;
-bool wifiStarted = false;
+bool wifiStarted = false, wifiOff = false;
 bool apMode = true;             // true = our own WiFi network is on; false = joined (or joining) the boat WiFi
 unsigned long staNextTry = 0;
 
@@ -201,6 +202,7 @@ void loadConfig() {
     else if(k == "profile") config.alarmProfile = v.toInt();
     else if(k == "cpa") config.alarmCpaNm = v.toFloat();
     else if(k == "tcpa") config.alarmTcpaMin = v.toInt();
+    else if(k == "wifioff") config.wifiOffMin = v.toInt();
     else if(k == "lang") strlcpy(config.lang, v.c_str(), sizeof(config.lang));
     else if(k == "tiles") config.tiles = v.toInt();
     else if(k == "sound") config.sound = v == "1";
@@ -229,7 +231,7 @@ void saveConfig() {
   if(!fsOk) return;
   File f = LittleFS.open(CONFIG_FILE, "w");
   if(!f) return;
-  f.printf("profile=%u\ncpa=%.2f\ntcpa=%u\n", config.alarmProfile, config.alarmCpaNm, config.alarmTcpaMin);
+  f.printf("profile=%u\ncpa=%.2f\ntcpa=%u\nwifioff=%u\n", config.alarmProfile, config.alarmCpaNm, config.alarmTcpaMin, config.wifiOffMin);
   f.printf("name=%s\ntype=%u\nshare=%d\nrange=%u\nlang=%s\ntiles=%u\nsound=%d\npass=%s\nnet=%u\nstassid=%s\nstapass=%s\n",
     config.name, config.type, config.share ? 1 : 0, config.alarmRangeNm, config.lang, config.tiles, config.sound ? 1 : 0,
     config.wifiPass, config.net, config.staSsid, config.staPass);
@@ -497,6 +499,7 @@ String configJson() {
     config.name, config.type, config.share ? "true" : "false", config.alarmRangeNm, config.lang, config.tiles,
     config.sound ? "true" : "false", (unsigned long)myId, FIRMWARE_VERSION);
   String json = buf;
+  json += "\"wifiOff\":" + String(config.wifiOffMin) + ",";
   json += "\"alarmProfile\":" + String(config.alarmProfile) + ",\"alarmCpa\":" + String(config.alarmCpaNm, 2) + ",\"alarmTcpa\":" + String(config.alarmTcpaMin) + ",";
   // The boat WiFi password is never sent back, only whether one is stored
   json += "\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
@@ -539,6 +542,10 @@ void handlePostConfig() {
   if(server.hasArg("alarmTcpa")) {
     int v = server.arg("alarmTcpa").toInt();
     if(v >= 1 && v <= 60) config.alarmTcpaMin = v;
+  }
+  if(server.hasArg("wifiOff")) {
+    int v = server.arg("wifiOff").toInt();
+    if(v == 0 || v == 5 || v == 10 || v == 30) config.wifiOffMin = v;
   }
   if(server.hasArg("lang")) {
     strcpy(config.lang, server.arg("lang") == "it" ? "it" : "en");
@@ -708,7 +715,24 @@ bool joinBoatWifi() {
   return false;
 }
 
+
+// An object left alone (a buoy) does not need its WiFi once it is set up: it goes off some minutes after
+// power-up, to save the battery. Never while a phone is connected; switching the node off and on brings it back.
+void handleWifiOff() {
+  static unsigned long quietSince = 0;
+  if(wifiOff || config.type != NODE_TYPE_OBJECT || config.wifiOffMin == 0) return;
+  if(millis() < config.wifiOffMin * 60000UL) return;
+  if(WiFi.softAPgetStationNum() > 0) { quietSince = 0; return; }
+  if(!quietSince) quietSince = millis();
+  if(millis() - quietSince < 60000) return;
+  server.stop();
+  WiFi.mode(WIFI_OFF);
+  wifiOff = true;
+  Serial.println("WiFi switched off (object): switch the node off and on to get it back");
+}
+
 void handleNetwork() {
+  if(wifiOff) return;
   MDNS.update();
   if(config.net != NET_BOAT || config.staSsid[0] == '\0') return;
   if(!apMode) {
@@ -775,9 +799,9 @@ void showStatus() {
   if(now - last < 5000) return;
   last = now;
   Serial.printf("status: %s %s, gps %lu baud %s sats %d, lora %s tx %lu rx %lu relay %lu, nodes %d, sd %d, wifi clients %d, free heap %d\n",
-    apMode ? "own WiFi" : "boat WiFi", ownIp().toString().c_str(), (unsigned long)gpsBaud, gpsFix() ? "fix" : "no fix",
+    wifiOff ? "WiFi off" : apMode ? "own WiFi" : "boat WiFi", wifiOff ? "-" : ownIp().toString().c_str(), (unsigned long)gpsBaud, gpsFix() ? "fix" : "no fix",
     gps.satellites.isValid() ? (int)gps.satellites.value() : 0, radioOk ? "ok" : "KO", (unsigned long)txCount,
-    (unsigned long)rxCount, (unsigned long)relayCount, (int)targets.size(), sdOk, apMode ? WiFi.softAPgetStationNum() : 0,
+    (unsigned long)rxCount, (unsigned long)relayCount, (int)targets.size(), sdOk, (apMode && !wifiOff) ? WiFi.softAPgetStationNum() : 0,
     rp2040.getFreeHeap());
 }
 
@@ -850,7 +874,8 @@ void loop() {
   handleRadio();
   updateTraffic();
   handleNetwork();
-  server.handleClient();
+  if(!wifiOff) server.handleClient();
+  handleWifiOff();
   showStatus();
   handleSerial();
 }
