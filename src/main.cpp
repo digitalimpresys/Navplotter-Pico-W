@@ -19,9 +19,10 @@
 #include <math.h>
 #include "traffic_packet.h"
 #include "nav_messages.h"
+#include "nav_quiet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.4.0"
+#define FIRMWARE_VERSION "0.4.1"
 
 // ---- Pins ----
 // Waveshare Pico-LoRa-SX1262 (fixed by the module, on SPI1)
@@ -203,6 +204,7 @@ void loadConfig() {
     else if(k == "cpa") config.alarmCpaNm = v.toFloat();
     else if(k == "tcpa") config.alarmTcpaMin = v.toInt();
     else if(k == "wifioff") config.wifiOffMin = v.toInt();
+    else if(k == "quiet") quietFromText(v);
     else if(k == "lang") strlcpy(config.lang, v.c_str(), sizeof(config.lang));
     else if(k == "tiles") config.tiles = v.toInt();
     else if(k == "sound") config.sound = v == "1";
@@ -231,7 +233,7 @@ void saveConfig() {
   if(!fsOk) return;
   File f = LittleFS.open(CONFIG_FILE, "w");
   if(!f) return;
-  f.printf("profile=%u\ncpa=%.2f\ntcpa=%u\nwifioff=%u\n", config.alarmProfile, config.alarmCpaNm, config.alarmTcpaMin, config.wifiOffMin);
+  f.printf("profile=%u\ncpa=%.2f\ntcpa=%u\nwifioff=%u\nquiet=%s\n", config.alarmProfile, config.alarmCpaNm, config.alarmTcpaMin, config.wifiOffMin, quietToText().c_str());
   f.printf("name=%s\ntype=%u\nshare=%d\nrange=%u\nlang=%s\ntiles=%u\nsound=%d\npass=%s\nnet=%u\nstassid=%s\nstapass=%s\n",
     config.name, config.type, config.share ? 1 : 0, config.alarmRangeNm, config.lang, config.tiles, config.sound ? 1 : 0,
     config.wifiPass, config.net, config.staSsid, config.staPass);
@@ -484,6 +486,8 @@ void updateTarget(Target& t) {
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
   t.alarm = (config.alarmRangeNm == 0 || t.distNm <= config.alarmRangeNm) && t.cpaNm <= alarmCpaNm() && t.tcpaS <= alarmTcpaS();
+  // A quiet node (friends sailing together): shown and written to, but it never raises the alarm
+  if(isQuiet(t.id)) t.alarm = false;
 }
 
 // Once a second: drop lost targets and recompute approaches
@@ -665,7 +669,7 @@ void handleState() {
     apMode ? WiFi.softAPIP().toString().c_str() : "");
   json += buf;
   json.remove(json.length() - 1);
-  json += ",\"msgStamp\":" + String(msgStamp()) + "}";
+  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + "}";
   sendJson(json);
 }
 
@@ -689,6 +693,12 @@ void webPostMessagesRead() {
   bool all = server.hasArg("all");
   uint32_t peer = strtoul(server.arg("peer").c_str(), nullptr, 16);
   msgMarkConversationRead(myId, config.name, peer, all);
+  sendJson("{\"ok\":true}");
+}
+
+void webPostQuiet() {
+  uint32_t id = strtoul(server.arg("id").c_str(), nullptr, 16);
+  if(setQuiet(id, server.arg("on") == "1")) saveConfig();
   sendJson("{\"ok\":true}");
 }
 
@@ -832,6 +842,7 @@ void initWeb() {
   server.on("/api/messages", HTTP_GET, webGetMessages);
   server.on("/api/messages", HTTP_POST, webPostMessage);
   server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
+  server.on("/api/quiet", HTTP_POST, webPostQuiet);
   server.onNotFound(handleNotFound);
   server.begin();
 }
