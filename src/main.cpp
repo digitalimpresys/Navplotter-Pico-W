@@ -20,7 +20,7 @@
 #include "traffic_packet.h"
 #include "web_page.h"
 
-#define FIRMWARE_VERSION "0.1.1"
+#define FIRMWARE_VERSION "0.2.0"
 
 // ---- Pins ----
 // Waveshare Pico-LoRa-SX1262 (fixed by the module, on SPI1)
@@ -48,10 +48,16 @@
 #define TARGET_STALE_MS 60000UL
 #define TARGET_EXPIRE_MS 180000UL
 #define MAX_TARGETS 30
-// Collision alarm: closest point of approach below CPA_ALARM_NM within CPA_ALARM_S seconds,
-// for targets inside the alarm range chosen in the setup page
-#define CPA_ALARM_NM 0.1
-#define CPA_ALARM_S 300
+// Collision alarm: closest point of approach below a passing distance within a warning time, for targets
+// inside the alarm range. Distance and time come from a profile chosen in the setup page, or are typed in.
+#define ALARM_PROFILE_CUSTOM 4
+struct AlarmProfile { float cpaNm; uint16_t tcpaMin; };
+const AlarmProfile ALARM_PROFILES[ALARM_PROFILE_CUSTOM] = {
+  {0.05, 2},   // harbour and narrow waters
+  {0.1, 5},    // coastal
+  {0.5, 10},   // open sea
+  {1.0, 20},   // night or poor visibility
+};
 
 // Network scenarios chosen in the setup page
 #define NET_OFFGRID 0    // the node's own WiFi, charts from the SD card
@@ -69,6 +75,9 @@ struct Config {
   uint8_t type = NODE_TYPE_BOAT;
   bool share = true;            // transmit our own position; when off the node only listens and relays
   uint8_t alarmRangeNm = 3;     // 3, 6 or 12; 0 = no limit
+  uint8_t alarmProfile = 1;     // index in ALARM_PROFILES, or ALARM_PROFILE_CUSTOM
+  float alarmCpaNm = 0.1;       // the custom profile's passing distance and warning time
+  uint16_t alarmTcpaMin = 5;
   char lang[3] = "en";          // "en" or "it"
   uint8_t tiles = 0;            // 0 = online, 1 = SD card, 2 = none
   bool sound = true;            // alarm sound on the phone
@@ -119,6 +128,10 @@ unsigned long staNextTry = 0;
 // ============================================
 // Helpers
 // ============================================
+
+// The passing distance (NM) and warning time (s) in use
+float alarmCpaNm() { return config.alarmProfile < ALARM_PROFILE_CUSTOM ? ALARM_PROFILES[config.alarmProfile].cpaNm : config.alarmCpaNm; }
+float alarmTcpaS() { return 60.0 * (config.alarmProfile < ALARM_PROFILE_CUSTOM ? ALARM_PROFILES[config.alarmProfile].tcpaMin : config.alarmTcpaMin); }
 
 bool gpsFix() {
   return gps.location.isValid() && gps.location.age() < 5000;
@@ -185,6 +198,9 @@ void loadConfig() {
     else if(k == "type") config.type = v.toInt();
     else if(k == "share") config.share = v == "1";
     else if(k == "range") config.alarmRangeNm = v.toInt();
+    else if(k == "profile") config.alarmProfile = v.toInt();
+    else if(k == "cpa") config.alarmCpaNm = v.toFloat();
+    else if(k == "tcpa") config.alarmTcpaMin = v.toInt();
     else if(k == "lang") strlcpy(config.lang, v.c_str(), sizeof(config.lang));
     else if(k == "tiles") config.tiles = v.toInt();
     else if(k == "sound") config.sound = v == "1";
@@ -200,6 +216,9 @@ void loadConfig() {
   sanitizeName(config.name);
   if(config.type > NODE_TYPE_OBJECT) config.type = NODE_TYPE_BOAT;
   if(config.alarmRangeNm != 0 && config.alarmRangeNm != 3 && config.alarmRangeNm != 6 && config.alarmRangeNm != 12) config.alarmRangeNm = 3;
+  if(config.alarmProfile > ALARM_PROFILE_CUSTOM) config.alarmProfile = 1;
+  config.alarmCpaNm = constrain(config.alarmCpaNm, 0.02f, 5.0f);
+  config.alarmTcpaMin = constrain(config.alarmTcpaMin, 1, 60);
   if(strcmp(config.lang, "it") != 0) strcpy(config.lang, "en");
   if(config.tiles > 2) config.tiles = 0;
   if(pass.length() < 8 || pass.length() > 32) pass = "navplotter";
@@ -210,6 +229,7 @@ void saveConfig() {
   if(!fsOk) return;
   File f = LittleFS.open(CONFIG_FILE, "w");
   if(!f) return;
+  f.printf("profile=%u\ncpa=%.2f\ntcpa=%u\n", config.alarmProfile, config.alarmCpaNm, config.alarmTcpaMin);
   f.printf("name=%s\ntype=%u\nshare=%d\nrange=%u\nlang=%s\ntiles=%u\nsound=%d\npass=%s\nnet=%u\nstassid=%s\nstapass=%s\n",
     config.name, config.type, config.share ? 1 : 0, config.alarmRangeNm, config.lang, config.tiles, config.sound ? 1 : 0,
     config.wifiPass, config.net, config.staSsid, config.staPass);
@@ -433,7 +453,7 @@ void updateTarget(Target& t) {
   t.cpaValid = true;
   t.tcpaS = tcpa;
   t.cpaNm = hypot(rx + vx * tcpa, ry + vy * tcpa) / 1852.0;
-  t.alarm = (config.alarmRangeNm == 0 || t.distNm <= config.alarmRangeNm) && t.cpaNm <= CPA_ALARM_NM && t.tcpaS <= CPA_ALARM_S;
+  t.alarm = (config.alarmRangeNm == 0 || t.distNm <= config.alarmRangeNm) && t.cpaNm <= alarmCpaNm() && t.tcpaS <= alarmTcpaS();
 }
 
 // Once a second: drop lost targets and recompute approaches
@@ -477,6 +497,7 @@ String configJson() {
     config.name, config.type, config.share ? "true" : "false", config.alarmRangeNm, config.lang, config.tiles,
     config.sound ? "true" : "false", (unsigned long)myId, FIRMWARE_VERSION);
   String json = buf;
+  json += "\"alarmProfile\":" + String(config.alarmProfile) + ",\"alarmCpa\":" + String(config.alarmCpaNm, 2) + ",\"alarmTcpa\":" + String(config.alarmTcpaMin) + ",";
   // The boat WiFi password is never sent back, only whether one is stored
   json += "\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
     (config.staPass[0] ? "true" : "false") + ",\"ssid\":\"" + jsonEscape(apSsid.c_str()) + "\",\"host\":\"" + hostName + ".local\",\"oneWifi\":true}";
@@ -506,6 +527,18 @@ void handlePostConfig() {
   if(server.hasArg("alarmRange")) {
     int v = server.arg("alarmRange").toInt();
     if(v == 0 || v == 3 || v == 6 || v == 12) config.alarmRangeNm = v;
+  }
+  if(server.hasArg("alarmProfile")) {
+    int v = server.arg("alarmProfile").toInt();
+    if(v >= 0 && v <= ALARM_PROFILE_CUSTOM) config.alarmProfile = v;
+  }
+  if(server.hasArg("alarmCpa")) {
+    float v = server.arg("alarmCpa").toFloat();
+    if(v >= 0.02 && v <= 5.0) config.alarmCpaNm = v;
+  }
+  if(server.hasArg("alarmTcpa")) {
+    int v = server.arg("alarmTcpa").toInt();
+    if(v >= 1 && v <= 60) config.alarmTcpaMin = v;
   }
   if(server.hasArg("lang")) {
     strcpy(config.lang, server.arg("lang") == "it" ? "it" : "en");

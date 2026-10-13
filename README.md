@@ -8,6 +8,7 @@ A NavPlotter without a screen: a Raspberry Pi Pico W (or Pico 2 W) with the Wave
 
 - reads the GPS and sends its position over LoRa, in the packet format shared by all NavPlotters (`include/traffic_packet.h`);
 - receives the other nodes, relays their packets (mesh) and computes the collision alarm (CPA / TCPA);
+- the collision alarm is set in the setup page: a profile (harbour 0.05 NM / 2 min, coastal 0.1 NM / 5 min, open sea 0.5 NM / 10 min, night 1 NM / 20 min) or a passing distance and a warning time of your own, plus the range inside which nodes can raise it (3, 6, 12 NM or no limit);
 - creates the WiFi network `NavPlotter-<name>` (password `navplotter`) and serves the web app at `http://192.168.4.1`: map, traffic, waypoints, routes, compass, setup;
 - a NavPlotter display (for example the Waveshare ESP32-S3-Touch-LCD-4 one) can use it as its node.
 
