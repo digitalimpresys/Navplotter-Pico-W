@@ -534,7 +534,7 @@ String configJson() {
   json += "\"msg\":true,\"alarmProfile\":" + String(config.alarmProfile) + ",\"alarmCpa\":" + String(config.alarmCpaNm, 2) + ",\"alarmTcpa\":" + String(config.alarmTcpaMin) + ",";
   // The boat WiFi password is never sent back, only whether one is stored
   json += "\"net\":" + String(config.net) + ",\"staSsid\":\"" + jsonEscape(config.staSsid) + "\",\"staPassSet\":" +
-    (config.staPass[0] ? "true" : "false") + ",\"ssid\":\"" + jsonEscape(apSsid.c_str()) + "\",\"host\":\"" + hostName + ".local\",\"oneWifi\":true}";
+    (config.staPass[0] ? "true" : "false") + ",\"ssid\":\"" + jsonEscape(apSsid.c_str()) + "\",\"host\":\"" + hostName + ".local\",\"oneWifi\":true,\"scan\":true}";
   return json;
 }
 
@@ -626,6 +626,23 @@ void handlePostConfig() {
     delay(500);
     rp2040.reboot();
   }
+}
+
+// The WiFi networks the node can see, to pick the boat WiFi without typing its name
+void webGetWifiScan() {
+  int n = WiFi.scanNetworks();
+  String json = "{\"nets\":[";
+  int count = 0;
+  for(int i = 0; i < n && count < 20; i++) {
+    String ssid = WiFi.SSID(i);
+    if(ssid.length() == 0 || ssid.startsWith("NavPlotter-")) continue;
+    bool seen = false;
+    for(int k = 0; k < i; k++) if(String(WiFi.SSID(k)) == ssid) { seen = true; break; }
+    if(seen) continue;
+    json += String(count++ ? "," : "") + "{\"ssid\":\"" + jsonEscape(ssid.c_str()) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+  }
+  json += "]}";
+  sendJson(json);
 }
 
 void handleState() {
@@ -809,7 +826,8 @@ void handleNetwork() {
     }
   } else if((long)(millis() - staNextTry) >= 0) {
     // On our own network: look for the boat WiFi again, but never while somebody is using ours
-    if(WiFi.softAPgetStationNum() > 0) staNextTry = millis() + 60000;
+    // (checked again every two seconds, so the search starts as soon as the phone leaves)
+    if(WiFi.softAPgetStationNum() > 0) staNextTry = millis() + 2000;
     else joinBoatWifi();
   }
 }
@@ -831,6 +849,12 @@ void initWeb() {
   }
   MDNS.begin(hostName.c_str());
   MDNS.addService("http", "tcp", 80);
+  // The app finds the node it is paired with by its id, whatever its name or address
+  char idText[9];
+  snprintf(idText, sizeof(idText), "%08lX", (unsigned long)myId);
+  MDNS.addService("navplotter", "tcp", 80);
+  MDNS.addServiceTxt("navplotter", "tcp", "id", idText);
+  MDNS.addServiceTxt("navplotter", "tcp", "name", config.name);
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/state", HTTP_GET, handleState);
@@ -842,6 +866,7 @@ void initWeb() {
   server.on("/api/messages", HTTP_POST, webPostMessage);
   server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
   server.on("/api/quiet", HTTP_POST, webPostQuiet);
+  server.on("/api/wifiscan", HTTP_GET, webGetWifiScan);
   server.onNotFound(handleNotFound);
   server.begin();
 }
