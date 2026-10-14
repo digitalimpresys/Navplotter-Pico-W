@@ -20,6 +20,7 @@
 #include "traffic_packet.h"
 #include "nav_messages.h"
 #include "nav_quiet.h"
+#include "nav_track.h"
 #include "web_page.h"
 
 #define FIRMWARE_VERSION "0.4.1"
@@ -271,6 +272,16 @@ void detectGpsBaud() {
 void readGps() {
   static unsigned long lastRetry = 0;
   while(Serial1.available()) gps.encode(Serial1.read());
+  // The track: a point whenever the boat has moved far enough, saved to the storage now and then
+  static unsigned long lastTrack = 0;
+  if(millis() - lastTrack > 1000) {
+    lastTrack = millis();
+    if(gpsFix() && gps.hdop.isValid() && gps.hdop.hdop() < 5.0) {
+      uint32_t t = (gps.date.isValid() && gps.time.isValid()) ? trackEpoch(gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(), gps.time.second()) : 0;
+      trackAdd(gps.location.lat(), gps.location.lng(), t);
+    }
+    trackSave();
+  }
   // No module found at boot: try again every now and then (it may have been plugged in later)
   if(!gpsBaud && millis() - lastRetry > 60000) {
     lastRetry = millis();
@@ -624,8 +635,32 @@ void handlePostConfig() {
   if(restartWifi) {
     // Network changes apply after a restart
     delay(500);
+    trackSave(true);
     rp2040.reboot();
   }
+}
+
+// The track, for the web app: the points from a given index on, the whole of it as a GPX file, a new start
+void webGetTrack() {
+  uint32_t from = strtoul(server.arg("from").c_str(), nullptr, 10);
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json", "");
+  trackWriteJson(from, [](const String& piece) { server.sendContent(piece); });
+  server.sendContent("");
+}
+
+void webGetTrackGpx() {
+  server.sendHeader("Content-Disposition", String("attachment; filename=\"navplotter-track-") + trackId + ".gpx\"");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/gpx+xml", "");
+  trackWriteGpx(config.name, [](const String& piece) { server.sendContent(piece); });
+  server.sendContent("");
+}
+
+void webPostTrackNew() {
+  trackNew();
+  sendJson("{\"ok\":true}");
 }
 
 // The WiFi networks the node can see, to pick the boat WiFi without typing its name
@@ -685,7 +720,7 @@ void handleState() {
     apMode ? WiFi.softAPIP().toString().c_str() : "");
   json += buf;
   json.remove(json.length() - 1);
-  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + "}";
+  json += ",\"msgStamp\":" + String(msgStamp()) + ",\"quiet\":" + quietJson() + ",\"track\":" + trackStateJson() + "}";
   sendJson(json);
 }
 
@@ -867,6 +902,9 @@ void initWeb() {
   server.on("/api/messages/read", HTTP_POST, webPostMessagesRead);
   server.on("/api/quiet", HTTP_POST, webPostQuiet);
   server.on("/api/wifiscan", HTTP_GET, webGetWifiScan);
+  server.on("/api/track", HTTP_GET, webGetTrack);
+  server.on("/api/track.gpx", HTTP_GET, webGetTrackGpx);
+  server.on("/api/track/new", HTTP_POST, webPostTrackNew);
   server.onNotFound(handleNotFound);
   server.begin();
 }
@@ -935,6 +973,7 @@ void setup() {
   fsOk = LittleFS.begin();
   if(!fsOk) Serial.println("Internal storage not available");
   loadConfig();
+  if(fsOk) trackBegin(LittleFS);
   Serial.printf("NavPlotter %s (Pico W), node %s, id %08lX\n", FIRMWARE_VERSION, config.name, (unsigned long)myId);
 
   // Optional SD card with chart tiles
